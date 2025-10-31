@@ -8,11 +8,9 @@ export default function RedirectPage() {
 	useEffect(() => {
 		if (!shortCode) return;
 
-		const apiBase = import.meta.env?.VITE_API_URL ?? "/api";
-		const normalizedBase = String(apiBase).endsWith("/")
-			? String(apiBase).slice(0, -1)
-			: String(apiBase);
-		const target = `${normalizedBase}/${shortCode}`;
+		// Always use same-origin /api proxy to avoid loops if VITE_API_URL is misconfigured
+		// Nginx is configured to proxy /api -> backend and strip the prefix
+		const target = `/api/${shortCode}`;
 
 		const interval = setInterval(() => {
 			setSecondsLeft((s) => (s > 0 ? s - 1 : 0));
