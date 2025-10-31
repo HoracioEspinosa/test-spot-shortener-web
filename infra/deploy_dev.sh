@@ -167,26 +167,52 @@ echo "🚀 Deploying to ECS (region=$REGION, cluster=$CLUSTER_NAME)"
   terraform apply -auto-approve
 )
 
-# Try to discover the public IP of the running task (no ALB scenario)
+# Wait for service to be stable and show the public IP
 SERVICE_NAME="$PROJECT_NAME"
-echo "🔎 Attempting to discover public IP for service '$SERVICE_NAME' in cluster '$CLUSTER_NAME'..."
-TASK_ARN=$(aws ecs list-tasks --cluster "$CLUSTER_NAME" --service-name "$SERVICE_NAME" --region "$REGION" --query 'taskArns[0]' --output text || true)
-if [[ -n "$TASK_ARN" && "$TASK_ARN" != "None" ]]; then
-  ENI_ID=$(aws ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$TASK_ARN" --region "$REGION" \
-    --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text || true)
-  if [[ -n "$ENI_ID" && "$ENI_ID" != "None" ]]; then
-    PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids "$ENI_ID" --region "$REGION" \
-      --query 'NetworkInterfaces[0].Association.PublicIp' --output text || true)
-    if [[ -n "$PUBLIC_IP" && "$PUBLIC_IP" != "None" ]]; then
-      echo "✅ Frontend reachable (once task is healthy): http://${PUBLIC_IP}"
-    else
-      echo "⚠️ Could not determine Public IP from ENI ($ENI_ID). The task may still be starting, or no public IP assigned."
-    fi
-  else
-    echo "⚠️ Could not get ENI ID from task. The task may still be provisioning."
-  fi
-else
-  echo "⚠️ Could not find a running task yet. It may take a minute for ECS to start the task."
+echo "⏳ Waiting for ECS service '$SERVICE_NAME' to become stable..."
+set +e
+aws ecs wait services-stable --cluster "$CLUSTER_NAME" --services "$SERVICE_NAME" --region "$REGION"
+WAITER_RC=$?
+set -e
+if [[ $WAITER_RC -ne 0 ]]; then
+  echo "⚠️ ecs wait services-stable did not complete successfully (rc=$WAITER_RC). Continuing with best-effort IP discovery."
 fi
 
-echo "✅ Done. Frontend service created/updated in ECS."
+# Poll for running task and public IP
+PUBLIC_IP=""
+for i in {1..60}; do
+  TASK_ARN=$(aws ecs list-tasks --cluster "$CLUSTER_NAME" --service-name "$SERVICE_NAME" --desired-status RUNNING --region "$REGION" --query 'taskArns[0]' --output text || true)
+  if [[ -z "$TASK_ARN" || "$TASK_ARN" == "None" ]]; then
+    sleep 5; continue
+  fi
+  ENI_ID=$(aws ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$TASK_ARN" --region "$REGION" \
+    --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text || true)
+  if [[ -z "$ENI_ID" || "$ENI_ID" == "None" ]]; then
+    sleep 5; continue
+  fi
+  PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids "$ENI_ID" --region "$REGION" \
+    --query 'NetworkInterfaces[0].Association.PublicIp' --output text || true)
+  if [[ -n "$PUBLIC_IP" && "$PUBLIC_IP" != "None" ]]; then
+    break
+  fi
+  sleep 5
+done
+
+if [[ -n "$PUBLIC_IP" && "$PUBLIC_IP" != "None" ]]; then
+  FRONTEND_URL="http://${PUBLIC_IP}"
+  echo "✅ Frontend public IP: $FRONTEND_URL"
+  # Optional: probe HTTP to ensure it's responding
+  set +e
+  for i in {1..12}; do
+    STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL/")
+    if [[ "$STATUS" =~ ^2|3 ]]; then
+      echo "✅ Frontend HTTP check OK ($STATUS): $FRONTEND_URL"; break
+    fi
+    sleep 5
+  done
+  set -e
+else
+  echo "⚠️ Could not determine Public IP. The task may not have a public IP or is still starting."
+fi
+
+echo "✅ Done. Frontend service is deployed."

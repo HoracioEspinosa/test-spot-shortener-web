@@ -33,10 +33,13 @@ export function UrlListItem({
 	const [isLoadingQr, setIsLoadingQr] = useState(false);
 	const { copyToClipboard } = useClipboard();
 
-	const shortUrl = `${window.location.origin}/${url.short_code}`;
+	// Display a clean short URL, but use /api/<code> for actual redirect to avoid SPA loop
+	const shortUrlDisplay = `${window.location.origin}/${url.short_code}`;
+	const shortUrlTarget = `${window.location.origin}/api/${url.short_code}`;
 
 	const handleCopy = () => {
-		copyToClipboard(shortUrl);
+		// Copy the API endpoint for immediate redirect when pasted/opened
+		copyToClipboard(shortUrlTarget);
 	};
 
 	const handleDelete = () => {
@@ -99,12 +102,12 @@ export function UrlListItem({
 				<div className="min-w-0">
 					<div className="flex items-center gap-1.5 mb-1">
 						<a
-							href={shortUrl}
+							href={shortUrlDisplay}
 							target="_blank"
 							rel="noopener noreferrer"
 							className="font-semibold text-blue-600 hover:underline truncate"
 						>
-							{shortUrl}
+							{shortUrlDisplay}
 						</a>
 						{isExpired && (
 							<span className="px-2 py-0.5 text-xs font-medium bg-red-100 text-red-700 rounded">
@@ -181,7 +184,7 @@ export function UrlListItem({
 					</DialogHeader>
 					<div className="py-4">
 						<p className="text-sm font-medium text-gray-900 mb-1">Short URL:</p>
-						<p className="text-sm text-gray-600 break-all">{shortUrl}</p>
+						<p className="text-sm text-gray-600 break-all">{shortUrlDisplay}</p>
 						<p className="text-sm font-medium text-gray-900 mt-3 mb-1">
 							Original URL:
 						</p>
