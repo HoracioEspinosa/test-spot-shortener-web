@@ -85,7 +85,7 @@ jobs:
           CLUSTER_NAME: ${{ secrets.ECS_CLUSTER_NAME_DEV }}
           SERVICE_NAME: ${{ secrets.ECS_BACKEND_SERVICE_NAME_DEV || 'spot2-backend-dev' }}
           AWS_REGION: ${{ env.AWS_REGION }}
-          BACKEND_PORT: 3000
+          BACKEND_PORT: 8000
         run: |
           set -e
           TASK_ARN=$(aws ecs list-tasks --cluster "$CLUSTER_NAME" --service-name "$SERVICE_NAME" --region "$AWS_REGION" --query 'taskArns[0]' --output text)
