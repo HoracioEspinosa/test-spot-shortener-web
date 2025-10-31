@@ -2,10 +2,6 @@ import { ProtectedRoute } from "@/features/auth";
 import { lazy } from "react";
 import { createBrowserRouter } from "react-router-dom";
 
-// Lazy load pages for code splitting
-const CreateUrlPage = lazy(
-	() => import("@/features/url-shortener/pages/CreateUrlPage"),
-);
 const UrlListPage = lazy(
 	() => import("@/features/url-shortener/pages/UrlListPage"),
 );
@@ -30,7 +26,7 @@ export const router = createBrowserRouter(
 				<ProtectedRoute>
 					<Layout>
 						<PageWrapper>
-							<CreateUrlPage />
+							<UrlListPage />
 						</PageWrapper>
 					</Layout>
 				</ProtectedRoute>

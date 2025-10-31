@@ -1,4 +1,3 @@
-import { Pagination } from "@/shared/components/Pagination";
 import type { ShortenedUrl } from "@/shared/types/api.types";
 // import { useState } from 'react'
 import { UrlListItem } from "./UrlListItem";
@@ -27,8 +26,6 @@ export function UrlList({
 	isLoading,
 	onDelete,
 	isDeletingId,
-	pagination,
-	onPageChange,
 	onSearch: _onSearch,
 	onOpenAnalytics,
 }: Readonly<UrlListProps>) {
@@ -94,27 +91,6 @@ export function UrlList({
 					/>
 				))}
 			</div>
-
-			{/* Pagination footer */}
-			{pagination && onPageChange && (
-				<>
-					<div className="mt-4 flex items-center justify-between text-sm text-gray-600">
-						<div>
-							Showing {urls.length} of {pagination.total} URLs
-						</div>
-						<div>
-							Page {pagination.currentPage} of {pagination.lastPage}
-						</div>
-					</div>
-					<div className="mt-3">
-						<Pagination
-							currentPage={pagination.currentPage}
-							totalPages={pagination.lastPage}
-							onPageChange={onPageChange}
-						/>
-					</div>
-				</>
-			)}
 		</div>
 	);
 }

@@ -19,3 +19,4 @@ crash.*.log
 *_override.tf.json
 .terraformrc
 terraform.rc
+.vite
