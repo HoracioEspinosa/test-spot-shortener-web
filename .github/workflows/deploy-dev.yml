@@ -56,6 +56,8 @@ jobs:
     needs: build-and-push
     env:
       IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+      TF_VAR_aws_region: ${{ env.AWS_REGION }}
+      TF_VAR_project_name: spot2-frontend-dev
     defaults:
       run:
         working-directory: infra/terraform/dev
@@ -165,19 +167,60 @@ jobs:
           echo "url=http://$PUBLIC_IP:$BACKEND_PORT" >> "$GITHUB_OUTPUT"
 
       - name: Terraform Plan
-        run: >-
-          terraform plan
-          -var="aws_region=${{ env.AWS_REGION }}"
-          -var="project_name=spot2-frontend-dev"
-          -var='cluster_name=${{ secrets.ECS_CLUSTER_NAME_DEV }}'
-          -var='image_url=${{ env.IMAGE_TAG }}'
-          -var='backend_url=${{ steps.backend.outputs.url }}'
+        env:
+          TF_VAR_cluster_name: ${{ secrets.ECS_CLUSTER_NAME_DEV }}
+          TF_VAR_image_url: ${{ env.IMAGE_TAG }}
+          TF_VAR_backend_url: ${{ steps.backend.outputs.url }}
+        run: terraform plan
 
       - name: Terraform Apply
-        run: >-
-          terraform apply -auto-approve
-          -var="aws_region=${{ env.AWS_REGION }}"
-          -var="project_name=spot2-frontend-dev"
-          -var='cluster_name=${{ secrets.ECS_CLUSTER_NAME_DEV }}'
-          -var='image_url=${{ env.IMAGE_TAG }}'
-          -var='backend_url=${{ steps.backend.outputs.url }}'
+        env:
+          TF_VAR_cluster_name: ${{ secrets.ECS_CLUSTER_NAME_DEV }}
+          TF_VAR_image_url: ${{ env.IMAGE_TAG }}
+          TF_VAR_backend_url: ${{ steps.backend.outputs.url }}
+        run: terraform apply -auto-approve
+
+      - name: Discover frontend public IP
+        id: frontend
+        env:
+          CLUSTER_NAME: ${{ secrets.ECS_CLUSTER_NAME_DEV }}
+          SERVICE_NAME: spot2-frontend-dev
+          AWS_REGION: ${{ env.AWS_REGION }}
+        run: |
+          set -e
+          TASK_ARN=$(aws ecs list-tasks --cluster "$CLUSTER_NAME" --service-name "$SERVICE_NAME" --region "$AWS_REGION" --query 'taskArns[0]' --output text)
+          if [ "$TASK_ARN" = "None" ] || [ -z "$TASK_ARN" ]; then
+            echo "No running tasks found for service $SERVICE_NAME" >&2
+            exit 1
+          fi
+          ENI_ID=$(aws ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$TASK_ARN" --region "$AWS_REGION" \
+            --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text)
+          if [ -z "$ENI_ID" ]; then
+            echo "Could not get ENI ID from task" >&2
+            exit 1
+          fi
+          PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids "$ENI_ID" --region "$AWS_REGION" \
+            --query 'NetworkInterfaces[0].Association.PublicIp' --output text)
+          if [ -z "$PUBLIC_IP" ] || [ "$PUBLIC_IP" = "None" ]; then
+            echo "Task ENI has no Public IP. Ensure assign_public_ip=true." >&2
+            exit 1
+          fi
+          echo "url=http://$PUBLIC_IP" >> "$GITHUB_OUTPUT"
+          echo "Frontend URL: http://$PUBLIC_IP"
+
+      - name: Post summary
+        run: |
+          echo "## Deploy Dev Result" >> $GITHUB_STEP_SUMMARY
+          echo "- Image: ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Backend URL: ${{ steps.backend.outputs.url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Frontend URL: ${{ steps.frontend.outputs.url }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify Slack (optional)
+        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          payload=$(jq -n \
+            --arg text "Deploy Dev listo. Frontend: ${{ steps.frontend.outputs.url }} | Backend: ${{ steps.backend.outputs.url }} | Image: ${{ env.IMAGE_TAG }}" \
+            '{text: $text}')
+          curl -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"
