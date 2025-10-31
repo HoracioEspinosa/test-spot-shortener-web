@@ -78,67 +78,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Adopt existing static resources (import if present)
-        env:
-          AWS_REGION: ${{ env.AWS_REGION }}
-          PROJECT_NAME: spot2-frontend-dev
-          CLUSTER_NAME: ${{ secrets.ECS_CLUSTER_NAME_DEV }}
-        run: |
-          set -e
-          echo "Adopting pre-existing resources for $PROJECT_NAME in $AWS_REGION"
-
-          # CloudWatch Log Group
-          LOG_GROUP="/ecs/${PROJECT_NAME}"
-          if aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP" --region "$AWS_REGION" --query 'logGroups[?logGroupName==`'$LOG_GROUP'`].logGroupName' --output text | grep -q "$LOG_GROUP"; then
-            echo " - Importing Log Group $LOG_GROUP"
-            terraform import aws_cloudwatch_log_group.this "$LOG_GROUP" || true
-          fi
-
-          # Default VPC
-          VPC_ID=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --region "$AWS_REGION" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || true)
-          if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
-            SG_ID=$(aws ec2 describe-security-groups --filters Name=group-name,Values="${PROJECT_NAME}-sg" Name=vpc-id,Values="$VPC_ID" --region "$AWS_REGION" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)
-            if [ -n "$SG_ID" ] && [ "$SG_ID" != "None" ]; then
-              echo " - Importing Security Group $SG_ID (${PROJECT_NAME}-sg)"
-              terraform import aws_security_group.svc "$SG_ID" || true
-            fi
-          fi
-
-          # IAM Role for task execution
-          if aws iam get-role --role-name "${PROJECT_NAME}-exec" >/dev/null 2>&1; then
-            echo " - Importing IAM Role ${PROJECT_NAME}-exec"
-            terraform import aws_iam_role.task_execution "${PROJECT_NAME}-exec" || true
-          fi
-
-          # ECS Service (handle ACTIVE/DRAINING)
-          STATUS=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$PROJECT_NAME" --region "$AWS_REGION" --query 'services[0].status' --output text 2>/dev/null || true)
-          if [ "$STATUS" = "ACTIVE" ]; then
-            echo " - Importing ECS Service ${CLUSTER_NAME}/${PROJECT_NAME}"
-            terraform import aws_ecs_service.this "${CLUSTER_NAME}/${PROJECT_NAME}" || true
-          elif [ "$STATUS" = "DRAINING" ]; then
-            echo " - Service is DRAINING. Waiting up to 5 minutes..."
-            for i in $(seq 1 60); do
-              sleep 5
-              CUR=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$PROJECT_NAME" --region "$AWS_REGION" --query 'services[0].status' --output text 2>/dev/null || true)
-              echo "   status: $CUR"
-              if [ "$CUR" != "DRAINING" ]; then
-                break
-              fi
-            done
-            CUR=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$PROJECT_NAME" --region "$AWS_REGION" --query 'services[0].status' --output text 2>/dev/null || true)
-            if [ "$CUR" = "ACTIVE" ]; then
-              echo " - Importing ECS Service after drain: ${CLUSTER_NAME}/${PROJECT_NAME}"
-              terraform import aws_ecs_service.this "${CLUSTER_NAME}/${PROJECT_NAME}" || true
-            else
-              echo " - Service is not ACTIVE (status=$CUR). Terraform will create it."
-            fi
-          else
-            echo " - ECS Service not found. Terraform will create it."
-          fi
-
+      # 1) Descubrir backend ANTES
       - name: Discover backend public IP
         id: backend
         env:
@@ -155,18 +95,11 @@ jobs:
           fi
           ENI_ID=$(aws ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$TASK_ARN" --region "$AWS_REGION" \
             --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text)
-          if [ -z "$ENI_ID" ]; then
-            echo "Could not get ENI ID from task" >&2
-            exit 1
-          fi
           PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids "$ENI_ID" --region "$AWS_REGION" \
             --query 'NetworkInterfaces[0].Association.PublicIp' --output text)
-          if [ -z "$PUBLIC_IP" ] || [ "$PUBLIC_IP" = "None" ]; then
-            echo "Task ENI has no Public IP. Ensure assign_public_ip=true or expose via another method." >&2
-            exit 1
-          fi
           echo "url=http://$PUBLIC_IP:$BACKEND_PORT" >> "$GITHUB_OUTPUT"
 
+      # 2) Escribir tfvars ANTES para que import/plan/apply ya vean variables
       - name: Write tfvars file (CI)
         run: |
           cat > tmp_rovodev_ci.auto.tfvars <<EOF
@@ -177,6 +110,42 @@ jobs:
           backend_url = "${{ steps.backend.outputs.url }}"
           EOF
           echo "Wrote tmp_rovodev_ci.auto.tfvars:" && cat tmp_rovodev_ci.auto.tfvars
+
+      # 3) Ahora sí init
+      - name: Terraform Init
+        run: terraform init
+
+      # 4) Import con variables ya válidas
+      - name: Adopt existing static resources (import if present)
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          PROJECT_NAME: spot2-frontend-dev
+          CLUSTER_NAME: ${{ secrets.ECS_CLUSTER_NAME_DEV }}
+        run: |
+          set -e
+          echo "Adopting pre-existing resources for $PROJECT_NAME in $AWS_REGION"
+          LOG_GROUP="/ecs/${PROJECT_NAME}"
+          if aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP" --region "$AWS_REGION" --query 'logGroups[?logGroupName==`'$LOG_GROUP'`].logGroupName' --output text | grep -q "$LOG_GROUP"; then
+            terraform import aws_cloudwatch_log_group.this "$LOG_GROUP" || true
+          fi
+          VPC_ID=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --region "$AWS_REGION" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || true)
+          if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+            SG_ID=$(aws ec2 describe-security-groups --filters Name=group-name,Values="${PROJECT_NAME}-sg" Name=vpc-id,Values="$VPC_ID" --region "$AWS_REGION" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)
+            [ -n "$SG_ID" ] && [ "$SG_ID" != "None" ] && terraform import aws_security_group.svc "$SG_ID" || true
+          fi
+          if aws iam get-role --role-name "${PROJECT_NAME}-exec" >/dev/null 2>&1; then
+            terraform import aws_iam_role.task_execution "${PROJECT_NAME}-exec" || true
+          fi
+          STATUS=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$PROJECT_NAME" --region "$AWS_REGION" --query 'services[0].status' --output text 2>/dev/null || true)
+          if [ "$STATUS" = "ACTIVE" ]; then
+            terraform import aws_ecs_service.this "${CLUSTER_NAME}/${PROJECT_NAME}" || true
+          elif [ "$STATUS" = "DRAINING" ]; then
+            for i in $(seq 1 60); do sleep 5; CUR=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$PROJECT_NAME" --region "$AWS_REGION" --query 'services[0].status' --output text 2>/dev/null || true); echo "status: $CUR"; [ "$CUR" != "DRAINING" ] && break; done
+            CUR=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$PROJECT_NAME" --region "$AWS_REGION" --query 'services[0].status' --output text 2>/dev/null || true)
+            [ "$CUR" = "ACTIVE" ] && terraform import aws_ecs_service.this "${CLUSTER_NAME}/${PROJECT_NAME}" || echo "Service not ACTIVE (status=$CUR)"
+          else
+            echo "ECS Service not found. Terraform will create it."
+          fi
 
       - name: Terraform Plan
         run: terraform plan
