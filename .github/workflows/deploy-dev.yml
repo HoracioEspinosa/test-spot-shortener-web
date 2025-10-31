@@ -173,10 +173,22 @@ jobs:
           echo "TF_VAR_backend_url=${{ steps.backend.outputs.url }}" >> $GITHUB_ENV
 
       - name: Terraform Plan
-        run: terraform plan
+        run: >-
+          terraform plan
+          -var="aws_region=us-east-1"
+          -var="project_name=spot2-frontend-dev"
+          -var='cluster_name=${{ secrets.ECS_CLUSTER_NAME_DEV }}'
+          -var='image_url=${{ needs.build-and-push.outputs.image_tag }}'
+          -var='backend_url=${{ steps.backend.outputs.url }}'
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve
+        run: >-
+          terraform apply -auto-approve
+          -var="aws_region=us-east-1"
+          -var="project_name=spot2-frontend-dev"
+          -var='cluster_name=${{ secrets.ECS_CLUSTER_NAME_DEV }}'
+          -var='image_url=${{ needs.build-and-push.outputs.image_tag }}'
+          -var='backend_url=${{ steps.backend.outputs.url }}'
 
       - name: Discover frontend public IP
         id: frontend
