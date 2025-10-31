@@ -156,33 +156,54 @@ jobs:
       - name: Terraform Apply
         run: terraform apply -auto-approve
 
-      - name: Discover frontend public IP
+      - name: Wait service stable and discover frontend IP
         id: frontend
         env:
           CLUSTER_NAME: ${{ secrets.ECS_CLUSTER_NAME_DEV }}
           SERVICE_NAME: spot2-frontend-dev
-          AWS_REGION: ${{ env.AWS_REGION }}
+          AWS_REGION: us-east-1
         run: |
           set -e
-          TASK_ARN=$(aws ecs list-tasks --cluster "$CLUSTER_NAME" --service-name "$SERVICE_NAME" --region "$AWS_REGION" --query 'taskArns[0]' --output text)
-          if [ "$TASK_ARN" = "None" ] || [ -z "$TASK_ARN" ]; then
-            echo "No running tasks found for service $SERVICE_NAME" >&2
+          echo "Waiting for ECS service to become stable..."
+          aws ecs wait services-stable --cluster "$CLUSTER_NAME" --services "$SERVICE_NAME" --region "$AWS_REGION" || true
+
+          echo "Polling for running task and public IP..."
+          PUBLIC_IP=""
+          for i in $(seq 1 60); do
+            TASK_ARN=$(aws ecs list-tasks --cluster "$CLUSTER_NAME" --service-name "$SERVICE_NAME" --desired-status RUNNING --region "$AWS_REGION" --query 'taskArns[0]' --output text || true)
+            if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+              sleep 5; continue
+            fi
+            ENI_ID=$(aws ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$TASK_ARN" --region "$AWS_REGION" \
+              --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text || true)
+            if [ -z "$ENI_ID" ] || [ "$ENI_ID" = "None" ]; then
+              sleep 5; continue
+            fi
+            PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids "$ENI_ID" --region "$AWS_REGION" \
+              --query 'NetworkInterfaces[0].Association.PublicIp' --output text || true)
+            if [ -n "$PUBLIC_IP" ] && [ "$PUBLIC_IP" != "None" ]; then
+              break
+            fi
+            sleep 5
+          done
+
+          if [ -n "$PUBLIC_IP" ] && [ "$PUBLIC_IP" != "None" ]; then
+            FRONTEND_URL="http://$PUBLIC_IP"
+            echo "url=$FRONTEND_URL" >> "$GITHUB_OUTPUT"
+            echo "Frontend URL: $FRONTEND_URL"
+
+            echo "Probing HTTP health..."
+            for i in $(seq 1 12); do
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL/")
+              if echo "$STATUS" | grep -Eq '^(2|3)'; then
+                echo "Health OK ($STATUS)"; break
+              fi
+              sleep 5
+            done
+          else
+            echo "No public IP could be determined yet." >&2
             exit 1
           fi
-          ENI_ID=$(aws ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$TASK_ARN" --region "$AWS_REGION" \
-            --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text)
-          if [ -z "$ENI_ID" ]; then
-            echo "Could not get ENI ID from task" >&2
-            exit 1
-          fi
-          PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids "$ENI_ID" --region "$AWS_REGION" \
-            --query 'NetworkInterfaces[0].Association.PublicIp' --output text)
-          if [ -z "$PUBLIC_IP" ] || [ "$PUBLIC_IP" = "None" ]; then
-            echo "Task ENI has no Public IP. Ensure assign_public_ip=true." >&2
-            exit 1
-          fi
-          echo "url=http://$PUBLIC_IP" >> "$GITHUB_OUTPUT"
-          echo "Frontend URL: http://$PUBLIC_IP"
 
       - name: Post summary
         run: |
