@@ -98,7 +98,10 @@ jobs:
           PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids "$ENI_ID" --region "$AWS_REGION" \
             --query 'NetworkInterfaces[0].Association.PublicIp' --output text)
           echo "url=http://$PUBLIC_IP:$BACKEND_PORT" >> "$GITHUB_OUTPUT"
-
+      - name: Debug backend URL
+        run: |
+          echo "from steps: ${{ steps.backend.outputs.url }}"
+          test -n "${{ steps.backend.outputs.url }}" || (echo "backend url vacío" && exit 1)
       # 2) Escribir tfvars ANTES para que import/plan/apply ya vean variables
       - name: Write tfvars file (CI)
         run: |
