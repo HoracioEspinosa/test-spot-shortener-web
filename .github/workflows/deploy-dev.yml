@@ -166,18 +166,16 @@ jobs:
           fi
           echo "url=http://$PUBLIC_IP:$BACKEND_PORT" >> "$GITHUB_OUTPUT"
 
+      - name: Export TF VARs
+        run: |
+          echo "TF_VAR_cluster_name=${{ secrets.ECS_CLUSTER_NAME_DEV }}" >> $GITHUB_ENV
+          echo "TF_VAR_image_url=${{ needs.build-and-push.outputs.image_tag }}" >> $GITHUB_ENV
+          echo "TF_VAR_backend_url=${{ steps.backend.outputs.url }}" >> $GITHUB_ENV
+
       - name: Terraform Plan
-        env:
-          TF_VAR_cluster_name: ${{ secrets.ECS_CLUSTER_NAME_DEV }}
-          TF_VAR_image_url: ${{ env.IMAGE_TAG }}
-          TF_VAR_backend_url: ${{ steps.backend.outputs.url }}
         run: terraform plan
 
       - name: Terraform Apply
-        env:
-          TF_VAR_cluster_name: ${{ secrets.ECS_CLUSTER_NAME_DEV }}
-          TF_VAR_image_url: ${{ env.IMAGE_TAG }}
-          TF_VAR_backend_url: ${{ steps.backend.outputs.url }}
         run: terraform apply -auto-approve
 
       - name: Discover frontend public IP
