@@ -1,13 +1,10 @@
 import type { ShortenedUrl } from "@/shared/types/api.types";
 import { render, screen } from "@/test/utils";
-import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { UrlList } from "../components/UrlList";
+import { UrlList } from "../components";
 
 describe("UrlList", () => {
 	const mockOnDelete = vi.fn();
-	const mockOnPageChange = vi.fn();
-
 	const mockUrls: ShortenedUrl[] = [
 		{
 			id: "1",
@@ -31,13 +28,6 @@ describe("UrlList", () => {
 		},
 	];
 
-	const mockPagination = {
-		currentPage: 1,
-		lastPage: 3,
-		perPage: 10,
-		total: 25,
-	};
-
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
@@ -45,15 +35,18 @@ describe("UrlList", () => {
 	it("renders loading state", () => {
 		render(<UrlList urls={[]} isLoading={true} onDelete={mockOnDelete} />);
 
+		// @ts-ignore
 		expect(screen.getByText(/Loading URLs.../i)).toBeInTheDocument();
 	});
 
 	it("renders empty state when no URLs", () => {
 		render(<UrlList urls={[]} isLoading={false} onDelete={mockOnDelete} />);
 
+		// @ts-ignore
 		expect(screen.getByText(/No shortened URLs yet/i)).toBeInTheDocument();
 		expect(
 			screen.getByText(/Create your first shortened URL to get started!/i),
+			// @ts-ignore
 		).toBeInTheDocument();
 	});
 
@@ -62,7 +55,9 @@ describe("UrlList", () => {
 			<UrlList urls={mockUrls} isLoading={false} onDelete={mockOnDelete} />,
 		);
 
+		// @ts-ignore
 		expect(screen.getByText(/Your Shortened URLs/i)).toBeInTheDocument();
+		// @ts-ignore
 		expect(screen.getByText(/2 URLs/i)).toBeInTheDocument();
 	});
 });

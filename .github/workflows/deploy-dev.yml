@@ -13,6 +13,8 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.image.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,6 +54,8 @@ jobs:
   terraform-apply:
     runs-on: ubuntu-latest
     needs: build-and-push
+    env:
+      IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
     defaults:
       run:
         working-directory: infra/terraform/dev
@@ -73,6 +77,64 @@ jobs:
 
       - name: Terraform Init
         run: terraform init
+
+      - name: Adopt existing static resources (import if present)
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          PROJECT_NAME: spot2-frontend-dev
+          CLUSTER_NAME: ${{ secrets.ECS_CLUSTER_NAME_DEV }}
+        run: |
+          set -e
+          echo "Adopting pre-existing resources for $PROJECT_NAME in $AWS_REGION"
+
+          # CloudWatch Log Group
+          LOG_GROUP="/ecs/${PROJECT_NAME}"
+          if aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP" --region "$AWS_REGION" --query 'logGroups[?logGroupName==`'$LOG_GROUP'`].logGroupName' --output text | grep -q "$LOG_GROUP"; then
+            echo " - Importing Log Group $LOG_GROUP"
+            terraform import aws_cloudwatch_log_group.this "$LOG_GROUP" || true
+          fi
+
+          # Default VPC
+          VPC_ID=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --region "$AWS_REGION" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || true)
+          if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+            SG_ID=$(aws ec2 describe-security-groups --filters Name=group-name,Values="${PROJECT_NAME}-sg" Name=vpc-id,Values="$VPC_ID" --region "$AWS_REGION" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)
+            if [ -n "$SG_ID" ] && [ "$SG_ID" != "None" ]; then
+              echo " - Importing Security Group $SG_ID (${PROJECT_NAME}-sg)"
+              terraform import aws_security_group.svc "$SG_ID" || true
+            fi
+          fi
+
+          # IAM Role for task execution
+          if aws iam get-role --role-name "${PROJECT_NAME}-exec" >/dev/null 2>&1; then
+            echo " - Importing IAM Role ${PROJECT_NAME}-exec"
+            terraform import aws_iam_role.task_execution "${PROJECT_NAME}-exec" || true
+          fi
+
+          # ECS Service (handle ACTIVE/DRAINING)
+          STATUS=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$PROJECT_NAME" --region "$AWS_REGION" --query 'services[0].status' --output text 2>/dev/null || true)
+          if [ "$STATUS" = "ACTIVE" ]; then
+            echo " - Importing ECS Service ${CLUSTER_NAME}/${PROJECT_NAME}"
+            terraform import aws_ecs_service.this "${CLUSTER_NAME}/${PROJECT_NAME}" || true
+          elif [ "$STATUS" = "DRAINING" ]; then
+            echo " - Service is DRAINING. Waiting up to 5 minutes..."
+            for i in $(seq 1 60); do
+              sleep 5
+              CUR=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$PROJECT_NAME" --region "$AWS_REGION" --query 'services[0].status' --output text 2>/dev/null || true)
+              echo "   status: $CUR"
+              if [ "$CUR" != "DRAINING" ]; then
+                break
+              fi
+            done
+            CUR=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$PROJECT_NAME" --region "$AWS_REGION" --query 'services[0].status' --output text 2>/dev/null || true)
+            if [ "$CUR" = "ACTIVE" ]; then
+              echo " - Importing ECS Service after drain: ${CLUSTER_NAME}/${PROJECT_NAME}"
+              terraform import aws_ecs_service.this "${CLUSTER_NAME}/${PROJECT_NAME}" || true
+            else
+              echo " - Service is not ACTIVE (status=$CUR). Terraform will create it."
+            fi
+          else
+            echo " - ECS Service not found. Terraform will create it."
+          fi
 
       - name: Discover backend public IP
         id: backend
@@ -108,7 +170,7 @@ jobs:
           -var="aws_region=${{ env.AWS_REGION }}"
           -var="project_name=spot2-frontend-dev"
           -var='cluster_name=${{ secrets.ECS_CLUSTER_NAME_DEV }}'
-          -var='image_url=${{ steps.image.outputs.tag }}'
+          -var='image_url=${{ env.IMAGE_TAG }}'
           -var='backend_url=${{ steps.backend.outputs.url }}'
 
       - name: Terraform Apply
@@ -117,5 +179,5 @@ jobs:
           -var="aws_region=${{ env.AWS_REGION }}"
           -var="project_name=spot2-frontend-dev"
           -var='cluster_name=${{ secrets.ECS_CLUSTER_NAME_DEV }}'
-          -var='image_url=${{ steps.image.outputs.tag }}'
+          -var='image_url=${{ env.IMAGE_TAG }}'
           -var='backend_url=${{ steps.backend.outputs.url }}'

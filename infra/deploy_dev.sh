@@ -111,20 +111,60 @@ echo "🚀 Deploying to ECS (region=$REGION, cluster=$CLUSTER_NAME)"
   fi
   set -e
 
-  # Ensure no conflicting pre-existing ECS service with same name (legacy with ALB)
-  echo "ℹ️ Checking for existing ECS service '$SERVICE_NAME' in cluster '$CLUSTER_NAME'"
-  EXISTS=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$SERVICE_NAME" --region "$REGION" --query 'services[0].status' --output text 2>/dev/null || true)
-  if [[ "$EXISTS" == "ACTIVE" || "$EXISTS" == "DRAINING" ]]; then
-    echo "🧹 Found existing service. Draining tasks and deleting to avoid conflicts..."
-    aws ecs update-service --cluster "$CLUSTER_NAME" --service "$SERVICE_NAME" --desired-count 0 --region "$REGION" >/dev/null 2>&1 || true
-    # Wait briefly for tasks to stop
-    sleep 10
-    aws ecs delete-service --cluster "$CLUSTER_NAME" --service "$SERVICE_NAME" --force --region "$REGION" >/dev/null 2>&1 || true
-    echo "✅ Existing service deletion requested. Continuing with Terraform apply."
+  # Ensure we manage an existing ECS service with the same name instead of deleting it
+  echo "ℹ️ Checking existing ECS service '$SERVICE_NAME' in cluster '$CLUSTER_NAME'"
+  SERVICE_STATUS=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$SERVICE_NAME" --region "$REGION" --query 'services[0].status' --output text 2>/dev/null || true)
+  SERVICE_ID="${CLUSTER_NAME}/${SERVICE_NAME}"
+  if [[ "$SERVICE_STATUS" == "ACTIVE" ]]; then
+    echo "🔄 Service exists (ACTIVE). Importing into Terraform state: $SERVICE_ID"
+    terraform import aws_ecs_service.this "$SERVICE_ID" >/dev/null 2>&1 || true
+  elif [[ "$SERVICE_STATUS" == "DRAINING" ]]; then
+    echo "⏳ Service is DRAINING. Waiting until it is INACTIVE/removed before continuing..."
+    for i in {1..60}; do
+      sleep 5
+      CUR=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$SERVICE_NAME" --region "$REGION" --query 'services[0].status' --output text 2>/dev/null || true)
+      echo "  - status: $CUR"
+      if [[ "$CUR" != "DRAINING" ]]; then
+        break
+      fi
+    done
+    CUR=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$SERVICE_NAME" --region "$REGION" --query 'services[0].status' --output text 2>/dev/null || true)
+    if [[ "$CUR" == "ACTIVE" ]]; then
+      echo "🔄 Service became ACTIVE again. Importing: $SERVICE_ID"
+      terraform import aws_ecs_service.this "$SERVICE_ID" >/dev/null 2>&1 || true
+    else
+      echo "✅ Service no longer DRAINING (status=$CUR). Terraform will create or adopt as needed."
+    fi
+  else
+    echo "ℹ️ Service not found (status=$SERVICE_STATUS). Terraform will create it."
   fi
 
-  terraform plan -refresh=false
-  terraform apply -refresh=false -auto-approve
+  # Import statically-named resources if they already exist to avoid "AlreadyExists"
+  echo "ℹ️ Importing existing static resources if present (log group, SG, IAM role)"
+  LOG_GROUP="/ecs/${PROJECT_NAME}"
+  # CloudWatch Log Group
+  if aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP" --region "$REGION" --query 'logGroups[?logGroupName==`'$LOG_GROUP'`].logGroupName' --output text | grep -q "$LOG_GROUP"; then
+    echo " - Importing CloudWatch Log Group $LOG_GROUP"
+    terraform import aws_cloudwatch_log_group.this "$LOG_GROUP" >/dev/null 2>&1 || true
+  fi
+  # Default VPC id (for SG search)
+  VPC_ID=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --region "$REGION" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || true)
+  # Security Group by name and VPC
+  if [[ -n "$VPC_ID" && "$VPC_ID" != "None" ]]; then
+    SG_ID=$(aws ec2 describe-security-groups --filters Name=group-name,Values="${PROJECT_NAME}-sg" Name=vpc-id,Values="$VPC_ID" --region "$REGION" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)
+    if [[ -n "$SG_ID" && "$SG_ID" != "None" ]]; then
+      echo " - Importing Security Group $SG_ID (${PROJECT_NAME}-sg)"
+      terraform import aws_security_group.svc "$SG_ID" >/dev/null 2>&1 || true
+    fi
+  fi
+  # IAM Role for task execution
+  if aws iam get-role --role-name "${PROJECT_NAME}-exec" >/dev/null 2>&1; then
+    echo " - Importing IAM Role ${PROJECT_NAME}-exec"
+    terraform import aws_iam_role.task_execution "${PROJECT_NAME}-exec" >/dev/null 2>&1 || true
+  fi
+
+  terraform plan
+  terraform apply -auto-approve
 )
 
 # Try to discover the public IP of the running task (no ALB scenario)
