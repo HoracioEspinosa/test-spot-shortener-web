@@ -58,6 +58,7 @@ jobs:
       IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
       TF_VAR_aws_region: us-east-1
       TF_VAR_project_name: spot2-frontend-dev
+      TF_INPUT: false
     defaults:
       run:
         working-directory: infra/terraform/dev
@@ -166,29 +167,22 @@ jobs:
           fi
           echo "url=http://$PUBLIC_IP:$BACKEND_PORT" >> "$GITHUB_OUTPUT"
 
-      - name: Export TF VARs
+      - name: Write tfvars file (CI)
         run: |
-          echo "TF_VAR_cluster_name=${{ secrets.ECS_CLUSTER_NAME_DEV }}" >> $GITHUB_ENV
-          echo "TF_VAR_image_url=${{ needs.build-and-push.outputs.image_tag }}" >> $GITHUB_ENV
-          echo "TF_VAR_backend_url=${{ steps.backend.outputs.url }}" >> $GITHUB_ENV
+          cat > tmp_rovodev_ci.auto.tfvars <<EOF
+          aws_region = "us-east-1"
+          project_name = "spot2-frontend-dev"
+          cluster_name = "${{ secrets.ECS_CLUSTER_NAME_DEV }}"
+          image_url = "${{ needs.build-and-push.outputs.image_tag }}"
+          backend_url = "${{ steps.backend.outputs.url }}"
+          EOF
+          echo "Wrote tmp_rovodev_ci.auto.tfvars:" && cat tmp_rovodev_ci.auto.tfvars
 
       - name: Terraform Plan
-        run: >-
-          terraform plan
-          -var="aws_region=us-east-1"
-          -var="project_name=spot2-frontend-dev"
-          -var='cluster_name=${{ secrets.ECS_CLUSTER_NAME_DEV }}'
-          -var='image_url=${{ needs.build-and-push.outputs.image_tag }}'
-          -var='backend_url=${{ steps.backend.outputs.url }}'
+        run: terraform plan
 
       - name: Terraform Apply
-        run: >-
-          terraform apply -auto-approve
-          -var="aws_region=us-east-1"
-          -var="project_name=spot2-frontend-dev"
-          -var='cluster_name=${{ secrets.ECS_CLUSTER_NAME_DEV }}'
-          -var='image_url=${{ needs.build-and-push.outputs.image_tag }}'
-          -var='backend_url=${{ steps.backend.outputs.url }}'
+        run: terraform apply -auto-approve
 
       - name: Discover frontend public IP
         id: frontend
