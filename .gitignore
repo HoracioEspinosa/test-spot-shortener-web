@@ -1,0 +1,21 @@
+dist
+node_modules/
+.idea
+.claude
+
+# Terraform
+.terraform/
+.terraform.*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+*.terraform.lock.hcl
+*.backup
+.overrides.tf
+.override.tf
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
