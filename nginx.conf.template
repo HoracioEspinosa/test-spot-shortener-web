@@ -13,7 +13,7 @@ server {
   # Strip /api prefix when proxying so backend sees paths without /api
   # e.g. /api/abc123 -> http://backend/abc123
   location /api/ {
-    proxy_pass ${VITE_API_URL}/;
+    proxy_pass ${VITE_API_URL};
 
     proxy_http_version 1.1;
     proxy_set_header Connection "";
